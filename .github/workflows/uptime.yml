@@ -1,0 +1,85 @@
+# External uptime check for Kraft Store Essentials (SE-386).
+#
+# Every 5 minutes a GitHub runner, which sits outside the Hetzner machine
+# that hosts production, asks https://app-essentials.kraftapps.ai/readyz.
+# The run fails, and GitHub emails the person who last changed the cron line
+# below, when the answer is not 200, when `ready` is not true or when
+# `database` is not "ok". One bad answer is retried once after 30 seconds,
+# so a failed run means two bad answers in a row.
+#
+# This repository is public on purpose: standard runners are free in public
+# repositories, while in the private store-essentials repo 288 runs a day
+# (each billed as a whole minute) would use up the organisation's Actions
+# minutes and, with its $0 budget, stop every other workflow too.
+#
+# GitHub may delay scheduled runs under load, and may drop some. A gap of 10
+# or 15 minutes between runs is GitHub, not the app. See README.md.
+name: uptime
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+    # Weekly keepalive: GitHub disables scheduled workflows in a public
+    # repository after 60 days without activity.
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: uptime
+  cancel-in-progress: false
+
+jobs:
+  readyz:
+    runs-on: ubuntu-slim
+    timeout-minutes: 3
+    steps:
+      - name: app-essentials.kraftapps.ai/readyz
+        env:
+          URL: https://app-essentials.kraftapps.ai/readyz
+          # A browser User-Agent: the app refuses curl's own on some paths,
+          # and a filter that grows to /readyz must not look like an outage.
+          UA: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0 Safari/537.36 kraft-uptime"
+        run: |
+          set -u
+          check() {
+            local code ready database
+            code=$(curl -sS --max-time 20 -A "$UA" -H "Cache-Control: no-cache" \
+              -o body.json -w "%{http_code}" "$URL" 2>curl.err) || code="000"
+            ready=$(jq -r '.ready | tostring' body.json 2>/dev/null || echo "not json")
+            database=$(jq -r '.database | tostring' body.json 2>/dev/null || echo "not json")
+            RESULT="HTTP $code, ready=$ready, database=$database"
+            if [ "$code" = "000" ]; then RESULT="$RESULT, $(tr -d '\n' < curl.err)"; fi
+            echo "$(date -u +%H:%M:%SZ) $RESULT"
+            [ "$code" = "200" ] && [ "$ready" = "true" ] && [ "$database" = "ok" ]
+          }
+
+          if check; then
+            echo "up: $RESULT" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          first="$RESULT"
+          echo "first check failed, retrying in 30 s"
+          sleep 30
+          if check; then
+            echo "up after one retry (first answer: $first)" >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning title=readyz recovered on retry::$first"
+            exit 0
+          fi
+          echo "DOWN: $first, then after 30 s: $RESULT" >> "$GITHUB_STEP_SUMMARY"
+          echo "::error title=app-essentials is down::$first, then after 30 s: $RESULT"
+          exit 1
+
+  keepalive:
+    if: github.event.schedule == '17 6 * * 1'
+    runs-on: ubuntu-slim
+    timeout-minutes: 2
+    permissions:
+      actions: write
+    steps:
+      - name: Re-enable this workflow so GitHub does not suspend it
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X PUT "repos/${GITHUB_REPOSITORY}/actions/workflows/uptime.yml/enable"
