@@ -9,6 +9,13 @@ A run fails when the answer is not 200, when `ready` is not true or when
 `database` is not "ok", after one retry 30 seconds later. A failed run is an
 outage.
 
+A second workflow, `.github/workflows/backups.yml`, runs hourly and reads
+the `backup` field of the same answer. It fails when the last good database
+dump or the newest dump confirmed on the off-server copy is more than 26
+hours old, or when the field is missing. A failed run there is not an
+outage: the app is up and a backup is late. What to do is in the
+store-essentials repo, `docs/operations/deployment.md`, "Backups (interim)".
+
 ## Who gets the email
 
 GitHub sends a failed scheduled run to one person: whoever last changed the
@@ -39,5 +46,6 @@ without activity, so a weekly job re-enables it through the API.
 
 ```
 gh workflow run uptime.yml -R kraftapps-ai/uptime
+gh workflow run backups.yml -R kraftapps-ai/uptime
 gh run list -R kraftapps-ai/uptime -L 5
 ```

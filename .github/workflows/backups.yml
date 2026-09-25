@@ -1,0 +1,74 @@
+# Hourly: are the backups of app-essentials fresh? (SE-385, and the interim
+# backup of 2026-09-25 in store-essentials docs/operations/deployment.md,
+# "Backups (interim)".)
+#
+# Reads the `backup` field of the public /readyz: numbers only, no secret.
+# The run fails, and GitHub emails whoever last changed the cron line below,
+# when the field is missing, or when the last good dump (`dumpHours`) or the
+# newest dump confirmed on the off-VM copy (`offsiteHours`) is more than 26
+# hours old. The dump runs at 02:30 Bucharest and the pull at 03:30, so a
+# failed night is an email around 05:00 the same morning.
+#
+# Hourly and not every 5 minutes: a stale backup is not an outage, and every
+# failed run is an email. When the permanent backup (pgBackRest) replaces
+# the interim one, the thresholds become SE-385 plan Task 7's: base backup
+# and dump within 26 h, restore test within 35 days, WAL not failing.
+#
+# The weekly keepalive of uptime.yml touches only that workflow; this one is
+# kept alive by its own weekly line below.
+name: backups
+
+on:
+  schedule:
+    - cron: "23 * * * *"
+    - cron: "41 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fresh:
+    if: github.event.schedule != '41 6 * * 1'
+    runs-on: ubuntu-slim
+    timeout-minutes: 3
+    steps:
+      - name: backup ages from /readyz
+        env:
+          URL: https://app-essentials.kraftapps.ai/readyz
+          UA: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0 Safari/537.36 kraft-uptime"
+        run: |
+          set -u
+          read_backup() {
+            curl -sS --max-time 20 -A "$UA" -H "Cache-Control: no-cache" -o body.json "$URL" || true
+            jq -e '.backup | type == "object"' body.json > /dev/null 2>&1
+          }
+          # One retry: a deployment restarts the app, and a timed out read
+          # answers `backup: null` without anything being wrong.
+          if ! read_backup; then sleep 60; fi
+          if ! read_backup; then
+            echo "::error title=No backup status::/readyz answered without a backup field, twice"
+            exit 1
+          fi
+          jq '.backup' body.json | tee -a "$GITHUB_STEP_SUMMARY"
+          problems=$(jq -r '.backup as $b | [
+              (if ($b.dumpHours == null) or ($b.dumpHours > 26) then "last good dump older than 26 h (\($b.dumpHours))" else empty end),
+              (if ($b.offsiteHours == null) or ($b.offsiteHours > 26) then "off-VM copy older than 26 h (\($b.offsiteHours))" else empty end)
+            ] | join("; ")' body.json)
+          if [ -n "$problems" ]; then
+            echo "::error title=Backups need attention::$problems"
+            exit 1
+          fi
+          echo "backups fresh" >> "$GITHUB_STEP_SUMMARY"
+
+  keepalive:
+    if: github.event.schedule == '41 6 * * 1'
+    runs-on: ubuntu-slim
+    timeout-minutes: 2
+    permissions:
+      actions: write
+    steps:
+      - name: Re-enable this workflow so GitHub does not suspend it
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X PUT "repos/${GITHUB_REPOSITORY}/actions/workflows/backups.yml/enable"
