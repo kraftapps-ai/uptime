@@ -16,6 +16,15 @@ hours old, or when the field is missing. A failed run there is not an
 outage: the app is up and a backup is late. What to do is in the
 store-essentials repo, `docs/operations/deployment.md`, "Backups (interim)".
 
+A third workflow, `.github/workflows/alerts.yml`, runs hourly (at :47) and
+reads `serverErrors` and `queue` of the same answer. It fails when the web
+process logged 5 or more server errors in the last hour, when a job is dead,
+when the oldest waiting job is over 30 minutes old, when the worker has not
+beaten for 10 minutes, or when a periodic task is over 30 minutes overdue or
+failed its last run. The source and its tests are in the store-essentials repo,
+`ops/uptime/alerts.yml` and `docs/operations/deployment.md`, "Alerts for server
+errors and the worker".
+
 ## Who gets the email
 
 GitHub sends a failed scheduled run to one person: whoever last changed the
