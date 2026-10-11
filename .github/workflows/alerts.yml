@@ -1,0 +1,89 @@
+# Hourly: does the app or its worker need the owner? (SE-1666, gap audit
+# 2026-10-11 item 5.) This file is the source of the workflow of the same name
+# in the public repository kraftapps-ai/uptime (.github/workflows/alerts.yml),
+# next to uptime.yml and backups.yml. Copy it there when it changes;
+# tests/domain/uptime-alerts.test.ts runs the jq program below on sample
+# answers, so the rules are tested here, where the field names live.
+#
+# Reads the public /readyz: numbers only, no secret. The run fails, and GitHub
+# emails whoever last changed the cron line below, when:
+#   - the web process logged 5 or more server errors in the last hour
+#     (`serverErrors`, app/platform/server-errors.server.ts);
+#   - a job is dead (`queue.dead`): a failed orders/create step or a
+#     compliance job (30-day legal clock) waits for a person;
+#   - the oldest waiting job is more than 30 minutes old;
+#   - the worker has not beaten for 10 minutes or never did;
+#   - a periodic task is more than 30 minutes overdue, or its last run failed.
+# `queue: null` (the read timed out) is not an alert: /readyz fails the 5
+# minute uptime check when the database is really down.
+#
+# Hourly, like backups.yml: every failed run is an email, and one problem
+# stays one email an hour until it is fixed, which is the rate limit.
+name: alerts
+
+on:
+  schedule:
+    - cron: "47 * * * *"
+    - cron: "53 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  needs-owner:
+    if: github.event.schedule != '53 6 * * 1'
+    runs-on: ubuntu-slim
+    timeout-minutes: 3
+    steps:
+      - name: server errors, dead jobs and overdue tasks from /readyz
+        env:
+          URL: https://app-essentials.kraftapps.ai/readyz
+          UA: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0 Safari/537.36 kraft-uptime"
+        run: |
+          set -u
+          cat > problems.jq <<'JQ'
+          [
+            (if (.serverErrors | type) != "object" then "no serverErrors field in /readyz" else empty end),
+            (if ((.serverErrors.lastHour // 0) >= 5)
+              then "\(.serverErrors.lastHour) server errors in the last hour, in \(.serverErrors.groups) groups (see the Forge log)"
+              else empty end),
+            (.queue as $q | if $q == null then empty else
+              (if ($q.dead // 0) > 0 then "\($q.dead) dead job(s), last failed topic \($q.lastErrorTopic)" else empty end),
+              (if ($q.oldestWaitingSeconds // 0) > 1800 then "oldest waiting job is \($q.oldestWaitingSeconds) s old" else empty end),
+              (if $q.workerBeatSeconds == null or $q.workerBeatSeconds > 600 then "worker is not beating (\($q.workerBeatSeconds))" else empty end),
+              ($q.periodic | to_entries[]
+                | select(.value.overdueSeconds > 1800 or .value.failed)
+                | "periodic task \(.key): overdue \(.value.overdueSeconds) s, last run failed: \(.value.failed)")
+            end)
+          ] | join("; ")
+          JQ
+          read_ready() {
+            curl -sS --max-time 20 -A "$UA" -H "Cache-Control: no-cache" -o body.json "$URL" || true
+            jq -e 'type == "object" and has("queue")' body.json > /dev/null 2>&1
+          }
+          # One retry: a deployment restarts the app.
+          if ! read_ready; then sleep 60; fi
+          if ! read_ready; then
+            echo "::error title=No readyz answer::/readyz did not answer with its fields, twice"
+            exit 1
+          fi
+          jq '{serverErrors, queue}' body.json | tee -a "$GITHUB_STEP_SUMMARY"
+          problems=$(jq -r -f problems.jq body.json)
+          if [ -n "$problems" ]; then
+            echo "::error title=Store Essentials needs attention::$problems"
+            exit 1
+          fi
+          echo "no errors, no dead jobs, tasks on time" >> "$GITHUB_STEP_SUMMARY"
+
+  keepalive:
+    if: github.event.schedule == '53 6 * * 1'
+    runs-on: ubuntu-slim
+    timeout-minutes: 2
+    permissions:
+      actions: write
+    steps:
+      - name: Re-enable this workflow so GitHub does not suspend it
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X PUT "repos/${GITHUB_REPOSITORY}/actions/workflows/alerts.yml/enable"
