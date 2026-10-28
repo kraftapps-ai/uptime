@@ -37,10 +37,13 @@ jobs:
         env:
           URL: https://app-essentials.kraftapps.ai/readyz
           UA: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0 Safari/537.36 kraft-uptime"
+          # The backup detail of /readyz needs the ops key since QA-2026-10-16
+          # (same secret as alerts.yml).
+          READYZ_KEY: ${{ secrets.KRAFT_READYZ_KEY }}
         run: |
           set -u
           read_backup() {
-            curl -sS --max-time 20 -A "$UA" -H "Cache-Control: no-cache" -o body.json "$URL" || true
+            curl -sS --max-time 20 -A "$UA" -H "Cache-Control: no-cache" -H "X-Kraft-Readyz-Key: $READYZ_KEY" -o body.json "$URL" || true
             jq -e '.backup | type == "object"' body.json > /dev/null 2>&1
           }
           # One retry: a deployment restarts the app, and a timed out read

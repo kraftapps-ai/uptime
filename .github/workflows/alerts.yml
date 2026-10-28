@@ -5,7 +5,11 @@
 # tests/domain/uptime-alerts.test.ts runs the jq program below on sample
 # answers, so the rules are tested here, where the field names live.
 #
-# Reads the public /readyz: numbers only, no secret. The run fails, and GitHub
+# Reads /readyz with the ops key (QA-2026-10-16: the detail is no longer
+# public): the repository secret KRAFT_READYZ_KEY, the same value as
+# KRAFT_READYZ_KEY in the app's .env, sent as X-Kraft-Readyz-Key. Numbers
+# only come back. Without the key the answer has no `queue` and the run fails
+# as "did not answer with its fields". The run fails, and GitHub
 # emails whoever last changed the cron line below, when:
 #   - the web process logged 5 or more server errors in the last hour
 #     (`serverErrors`, app/platform/server-errors.server.ts);
@@ -39,6 +43,7 @@ jobs:
       - name: server errors, dead jobs and overdue tasks from /readyz
         env:
           URL: https://app-essentials.kraftapps.ai/readyz
+          READYZ_KEY: ${{ secrets.KRAFT_READYZ_KEY }}
           UA: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0 Safari/537.36 kraft-uptime"
         run: |
           set -u
@@ -59,7 +64,7 @@ jobs:
           ] | join("; ")
           JQ
           read_ready() {
-            curl -sS --max-time 20 -A "$UA" -H "Cache-Control: no-cache" -o body.json "$URL" || true
+            curl -sS --max-time 20 -A "$UA" -H "Cache-Control: no-cache" -H "X-Kraft-Readyz-Key: $READYZ_KEY" -o body.json "$URL" || true
             jq -e 'type == "object" and has("queue")' body.json > /dev/null 2>&1
           }
           # One retry: a deployment restarts the app.
