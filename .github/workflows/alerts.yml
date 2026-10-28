@@ -73,10 +73,13 @@ jobs:
             echo "::error title=No readyz answer::/readyz did not answer with its fields, twice"
             exit 1
           fi
-          jq '{serverErrors, queue}' body.json | tee -a "$GITHUB_STEP_SUMMARY"
+          # This repository is public, so are its run logs: the detail stays out
+          # of them (QA-2026-10-16). Only the number of problems is printed; read
+          # /readyz with the ops key for the rest.
           problems=$(jq -r -f problems.jq body.json)
           if [ -n "$problems" ]; then
-            echo "::error title=Store Essentials needs attention::$problems"
+            count=$(jq -r -f problems.jq body.json | tr ';' '\n' | grep -c .)
+            echo "::error title=Store Essentials needs attention::$count problem(s), read /readyz with the ops key"
             exit 1
           fi
           echo "no errors, no dead jobs, tasks on time" >> "$GITHUB_STEP_SUMMARY"

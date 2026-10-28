@@ -2,7 +2,8 @@
 # backup of 2026-09-25 in store-essentials docs/operations/deployment.md,
 # "Backups (interim)".)
 #
-# Reads the `backup` field of the public /readyz: numbers only, no secret.
+# Reads the `backup` field of /readyz with the ops key; nothing of it is
+# printed, since this repository and its logs are public.
 # The run fails, and GitHub emails whoever last changed the cron line below,
 # when the field is missing, or when the last good dump (`dumpHours`) or the
 # newest dump confirmed on the off-VM copy (`offsiteHours`) is more than 26
@@ -53,13 +54,13 @@ jobs:
             echo "::error title=No backup status::/readyz answered without a backup field, twice"
             exit 1
           fi
-          jq '.backup' body.json | tee -a "$GITHUB_STEP_SUMMARY"
+          # Public repository, public logs: the ages stay out of them.
           problems=$(jq -r '.backup as $b | [
               (if ($b.dumpHours == null) or ($b.dumpHours > 26) then "last good dump older than 26 h (\($b.dumpHours))" else empty end),
               (if ($b.offsiteHours == null) or ($b.offsiteHours > 26) then "off-VM copy older than 26 h (\($b.offsiteHours))" else empty end)
             ] | join("; ")' body.json)
           if [ -n "$problems" ]; then
-            echo "::error title=Backups need attention::$problems"
+            echo "::error title=Backups need attention::a dump or the off-VM copy is older than 26 h, read /readyz with the ops key"
             exit 1
           fi
           echo "backups fresh" >> "$GITHUB_STEP_SUMMARY"
